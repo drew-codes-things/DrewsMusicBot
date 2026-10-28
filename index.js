@@ -22,6 +22,7 @@ const {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ComponentType,
+  InteractionContextType,
   MessageFlags,
 } = require("discord.js");
 const {
@@ -142,6 +143,7 @@ class GuildPlayer {
     this.voiceConnection = null;
     this.audioPlayer = null;
     this.pendingTransition = "advance";
+    this.startingPlayback = false;
   }
 
   enqueue(track) {
@@ -409,8 +411,8 @@ async function loginSpotifyInteractively(api) {
       const returnedState = requestUrl.searchParams.get("state");
       const authCode = requestUrl.searchParams.get("code");
 
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(error ? `<p>Spotify authorization failed: ${error}. You can close this tab.</p>` : "<p>Spotify authorized - you can close this tab.</p>");
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(error ? `Spotify authorization failed: ${error}. You can close this tab.` : "Spotify authorized - you can close this tab.");
       server.close();
 
       if (error) {
@@ -594,10 +596,10 @@ const commandsData = [
       option.setName("position").setDescription("Position shown by /queue").setRequired(true)
     ),
   new SlashCommandBuilder().setName("clear").setDescription("Clear the entire queue."),
-];
+].map((command) => command.setContexts(InteractionContextType.Guild));
 
 async function defaultDownloadTrack(guildId, track, signal) {
-  const destDir = path.join("downloads", String(guildId));
+  const destDir = path.join(STORAGE_BASE_DIR, "downloads", String(guildId));
   return download(track, destDir, undefined, signal);
 }
 
@@ -776,7 +778,7 @@ class MusicController {
   async queueMany(interaction, tracks, skipped, truncated = false) {
     const guildId = interaction.guildId;
     const player = this.playerFor(guildId);
-    const wasIdle = player.current === null;
+    const wasIdle = player.current === null && !player.startingPlayback;
     for (const track of tracks) {
       const item = player.enqueue(track);
       this.downloadManager.startDownload(guildId, item);
@@ -812,7 +814,7 @@ class MusicController {
       await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
     }
 
-    const wasIdle = player.current === null;
+    const wasIdle = player.current === null && !player.startingPlayback;
     if (wasIdle) {
       await this.startPlayback(interaction.guild, player);
     }
@@ -827,6 +829,15 @@ class MusicController {
   }
 
   async startPlayback(guild, player) {
+    player.startingPlayback = true;
+    try {
+      await this.connectAndPlayNext(guild, player);
+    } finally {
+      player.startingPlayback = false;
+    }
+  }
+
+  async connectAndPlayNext(guild, player) {
     const channelId = this.assignments[guild.id];
     const channel = guild.channels.cache.get(channelId) ?? (await guild.channels.fetch(channelId).catch(() => null));
     if (!channel) {
