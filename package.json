@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node index.js",
     "postinstall": "node scripts/fetch-yt-dlp.js",
-    "fetch-yt-dlp": "node scripts/fetch-yt-dlp.js"
+    "fetch-yt-dlp": "node scripts/fetch-yt-dlp.js",
+    "test": "node --test test/"
   },
   "license": "MIT",
   "dependencies": {

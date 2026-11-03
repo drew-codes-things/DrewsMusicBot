@@ -137,6 +137,10 @@ queued and the confirmation message says so.
 | `/remove <position>` | Remove one track from the queue by its `/queue` position. |
 | `/clear` | Clear the entire queue. |
 
+### Queues survive restarts
+
+The current track and everything queued after it are saved to `data/queues.json` whenever the queue changes. When the bot starts again it re-queues them in each server that still has an assigned channel, starting from the track that was playing. Delete that file to start with empty queues.
+
 ## Running the tests
 
 ```bash
@@ -147,6 +151,8 @@ All tests run against mocked yt-dlp/Spotify/Discord interfaces - no
 network access or a live bot session is required.
 
 ## Manual verification checklist
+
+- [ ] Queue a few tracks, restart the bot, and confirm it rejoins the assigned channel and carries on from the track that was playing.
 
 Automated tests cover queue/history logic, download concurrency, and
 command registration, but real voice playback needs a live bot and

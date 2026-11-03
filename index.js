@@ -108,6 +108,7 @@ function classify(query) {
 
 const STORAGE_BASE_DIR = __dirname;
 const DEFAULT_ASSIGNMENTS_PATH = path.join(STORAGE_BASE_DIR, "data", "assignments.json");
+const DEFAULT_QUEUES_PATH = path.join(STORAGE_BASE_DIR, "data", "queues.json");
 
 function loadAssignments(filePath = DEFAULT_ASSIGNMENTS_PATH) {
   if (!fs.existsSync(filePath)) {
@@ -126,6 +127,27 @@ function saveAssignments(assignments, filePath = DEFAULT_ASSIGNMENTS_PATH) {
   fs.writeFileSync(filePath, JSON.stringify(assignments, null, 2));
 }
 
+function loadQueues(filePath = DEFAULT_QUEUES_PATH) {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const queues = {};
+  for (const [guildId, tracks] of Object.entries(raw)) {
+    if (Array.isArray(tracks)) {
+      queues[guildId] = tracks.filter((track) => track && typeof track.url === "string" && typeof track.title === "string");
+    }
+  }
+  return queues;
+}
+
+function saveQueues(queues, filePath = DEFAULT_QUEUES_PATH) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(queues, null, 2));
+  fs.renameSync(temporaryPath, filePath);
+}
+
 class QueueItem {
   constructor(track, filepath = null) {
     this.track = track;
@@ -135,8 +157,9 @@ class QueueItem {
 }
 
 class GuildPlayer {
-  constructor(guildId) {
+  constructor(guildId, onChange = () => {}) {
     this.guildId = guildId;
+    this.onChange = onChange;
     this.queue = [];
     this.history = [];
     this.current = null;
@@ -149,6 +172,7 @@ class GuildPlayer {
   enqueue(track) {
     const item = new QueueItem(track);
     this.queue.push(item);
+    this.onChange();
     return item;
   }
 
@@ -157,12 +181,15 @@ class GuildPlayer {
     if (index < 0 || index >= this.queue.length) {
       throw new RangeError(`No track at position ${position}`);
     }
-    return this.queue.splice(index, 1)[0];
+    const [removed] = this.queue.splice(index, 1);
+    this.onChange();
+    return removed;
   }
 
   clear() {
     const removed = this.queue;
     this.queue = [];
+    this.onChange();
     return removed;
   }
 
@@ -171,7 +198,12 @@ class GuildPlayer {
       this.history.push(this.current.track);
     }
     this.current = this.queue.length ? this.queue.shift() : null;
+    this.onChange();
     return this.current;
+  }
+
+  pendingTracks() {
+    return [this.current, ...this.queue].filter(Boolean).map((item) => item.track);
   }
 
   goBack() {
@@ -182,6 +214,7 @@ class GuildPlayer {
       this.queue.unshift(new QueueItem(this.current.track));
     }
     this.current = new QueueItem(this.history.pop());
+    this.onChange();
     return this.current;
   }
 }
@@ -616,18 +649,77 @@ async function notifyInteractionFailure(interaction, message) {
 }
 
 class MusicController {
-  constructor({ downloadTrack = defaultDownloadTrack, assignmentsPath = DEFAULT_ASSIGNMENTS_PATH } = {}) {
+  constructor({
+    downloadTrack = defaultDownloadTrack,
+    assignmentsPath = DEFAULT_ASSIGNMENTS_PATH,
+    queuesPath = DEFAULT_QUEUES_PATH,
+  } = {}) {
     this.players = new Map();
     this.assignmentsPath = assignmentsPath;
+    this.queuesPath = queuesPath;
+    this.saveScheduled = false;
     this.assignments = loadAssignments(assignmentsPath);
     this.downloadManager = new DownloadManager((guildId, track, signal) => downloadTrack(guildId, track, signal));
   }
 
   playerFor(guildId) {
     if (!this.players.has(guildId)) {
-      this.players.set(guildId, new GuildPlayer(guildId));
+      this.players.set(guildId, new GuildPlayer(guildId, () => this.scheduleQueueSave()));
     }
     return this.players.get(guildId);
+  }
+
+  scheduleQueueSave() {
+    if (this.saveScheduled) {
+      return;
+    }
+    this.saveScheduled = true;
+    setImmediate(() => {
+      this.saveScheduled = false;
+      this.saveQueuesNow();
+    });
+  }
+
+  saveQueuesNow() {
+    const queues = {};
+    for (const [guildId, player] of this.players) {
+      const tracks = player.pendingTracks();
+      if (tracks.length) {
+        queues[guildId] = tracks;
+      }
+    }
+    try {
+      saveQueues(queues, this.queuesPath);
+    } catch (error) {
+      logger.error("Couldn't save the queues:", error.message);
+    }
+  }
+
+  async restoreQueues(client) {
+    let saved;
+    try {
+      saved = loadQueues(this.queuesPath);
+    } catch (error) {
+      logger.error("Couldn't read the saved queues, starting empty:", error.message);
+      return 0;
+    }
+    let restored = 0;
+    for (const [guildId, tracks] of Object.entries(saved)) {
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild || !this.assignments[guildId] || !tracks.length) {
+        continue;
+      }
+      const player = this.playerFor(guildId);
+      for (const track of tracks) {
+        this.downloadManager.startDownload(guildId, player.enqueue(track));
+      }
+      restored += tracks.length;
+      this.startPlayback(guild, player).catch((error) => logger.error(`Couldn't resume playback in guild ${guildId}:`, error.message));
+    }
+    if (restored) {
+      logger.info(`Restored ${restored} queued track(s) from before the restart.`);
+    }
+    return restored;
   }
 
   async handleInteraction(interaction) {
@@ -1047,6 +1139,7 @@ async function main() {
   client.once(Events.ClientReady, async (readyClient) => {
     await registerCommands(readyClient.user.id, token);
     logger.info(`Logged in as ${readyClient.user.tag}`);
+    await music.restoreQueues(readyClient);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -1078,6 +1171,8 @@ module.exports = {
   DEFAULT_PATH: DEFAULT_ASSIGNMENTS_PATH,
   loadAssignments,
   saveAssignments,
+  loadQueues,
+  saveQueues,
   QueueItem,
   GuildPlayer,
   DownloadManager,
