@@ -5,6 +5,11 @@ for a song or paste a YouTube/Spotify link - including full playlists -
 pick a track, and control playback with slash commands. Audio is
 downloaded via `yt-dlp` on demand and deleted immediately after it plays.
 
+Spotify playlists are matched to YouTube a few tracks at a time (four
+lookups in flight, see `SPOTIFY_MATCH_CONCURRENCY` in `index.js`), so a
+long playlist queues in seconds rather than minutes. A track that cannot
+be matched is skipped and counted in the "couldn't be matched" summary.
+
 Whenever a track (or playlist) is added to the queue, the bot also posts
 an up-to-date "now playing / up next" listing into the channel the
 `/play` command was used in, so everyone watching can see what's queued.

@@ -9,6 +9,7 @@ const http = require("http");
 const { execFile } = require("child_process");
 
 const MAX_PLAYLIST_TRACKS = 250;
+const SPOTIFY_MATCH_CONCURRENCY = 4;
 
 const {
   Client,
@@ -332,6 +333,20 @@ class DownloadManager {
 }
 
 DownloadManager.MAX_CONCURRENT_DOWNLOADS = 2;
+
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 function trackFromEntry(entry) {
   const videoId = entry.id;
@@ -817,6 +832,12 @@ class MusicController {
       const chosen = results[Number(selectInteraction.values[0])];
       this.handleTrackSelected(selectInteraction, chosen);
     });
+
+    collector.on("end", (collected) => {
+      if (collected.size === 0) {
+        interaction.editReply({ content: "Search timed out - run /play again to pick a track.", components: [] }).catch(() => {});
+      }
+    });
   }
 
   async handleTrackSelected(selectInteraction, chosenTrack) {
@@ -854,17 +875,18 @@ class MusicController {
       throw error;
     }
     const truncated = pairs.length > MAX_PLAYLIST_TRACKS;
-    const tracks = [];
-    let skipped = 0;
-    for (const [title, artist] of pairs.slice(0, MAX_PLAYLIST_TRACKS)) {
+    const matched = await mapWithConcurrency(pairs.slice(0, MAX_PLAYLIST_TRACKS), SPOTIFY_MATCH_CONCURRENCY, async ([title, artist]) => {
       const searchQuery = `${artist} - ${title} audio`.replace(/^[\s-]+|[\s-]+$/g, "");
-      const matches = await search(searchQuery, 1);
-      if (matches.length) {
-        tracks.push(matches[0]);
-      } else {
-        skipped += 1;
+      try {
+        const matches = await search(searchQuery, 1);
+        return matches.length ? matches[0] : null;
+      } catch (error) {
+        logger.warn(`Spotify match failed for "${searchQuery}": ${error.message}`);
+        return null;
       }
-    }
+    });
+    const tracks = matched.filter(Boolean);
+    const skipped = matched.length - tracks.length;
     await this.queueMany(interaction, tracks, skipped, truncated);
   }
 
@@ -901,7 +923,9 @@ class MusicController {
     this.downloadManager.startDownload(guildId, item);
 
     const message = `Queued **${track.title}**.`;
-    if (interaction.replied || interaction.deferred) {
+    if (typeof interaction.isMessageComponent === "function" && interaction.isMessageComponent() && !interaction.replied && !interaction.deferred) {
+      await interaction.update({ content: message, components: [] });
+    } else if (interaction.replied || interaction.deferred) {
       await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
     } else {
       await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
@@ -1180,6 +1204,8 @@ module.exports = {
   CancelledError,
   defaultYtdlp,
   trackFromEntry,
+  mapWithConcurrency,
+  SPOTIFY_MATCH_CONCURRENCY,
   search,
   getVideoInfo,
   extractPlaylistTracks,
