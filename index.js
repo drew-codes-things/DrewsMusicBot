@@ -124,6 +124,7 @@ function classify(query) {
 const STORAGE_BASE_DIR = __dirname;
 const DEFAULT_ASSIGNMENTS_PATH = path.join(STORAGE_BASE_DIR, "data", "assignments.json");
 const DEFAULT_QUEUES_PATH = path.join(STORAGE_BASE_DIR, "data", "queues.json");
+const DEFAULT_DOWNLOADS_DIR = path.join(STORAGE_BASE_DIR, "downloads");
 
 function loadAssignments(filePath = DEFAULT_ASSIGNMENTS_PATH) {
   if (!fs.existsSync(filePath)) {
@@ -403,6 +404,34 @@ async function extractPlaylistTracks(url, ytdlpFn = defaultYtdlp) {
   return entries.map(trackFromEntry);
 }
 
+function removeFilesWithStem(dir, stem) {
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.startsWith(`${stem}.`)) continue;
+    try {
+      fs.rmSync(path.join(dir, name), { force: true });
+    } catch (error) {
+      logger.error(`Failed to delete ${name}:`, error.message);
+    }
+  }
+}
+
+function removeLeftoverDownloads(downloadsDir = DEFAULT_DOWNLOADS_DIR) {
+  if (!fs.existsSync(downloadsDir)) {
+    return 0;
+  }
+  let removed = 0;
+  for (const guildDir of fs.readdirSync(downloadsDir)) {
+    const guildPath = path.join(downloadsDir, guildDir);
+    if (fs.statSync(guildPath).isDirectory()) {
+      removed += fs.readdirSync(guildPath).length;
+    } else {
+      removed += 1;
+    }
+    fs.rmSync(guildPath, { recursive: true, force: true });
+  }
+  return removed;
+}
+
 function isTooLong(track) {
   return typeof track.durationSeconds === "number" && track.durationSeconds > MAX_TRACK_SECONDS;
 }
@@ -423,9 +452,15 @@ async function download(track, destDir, ytdlpFn = defaultYtdlp, signal = undefin
     maxFilesize: MAX_DOWNLOAD_SIZE,
   };
   const execOptions = signal ? { signal, timeout: DOWNLOAD_TIMEOUT_MS } : { timeout: DOWNLOAD_TIMEOUT_MS };
-  await ytdlpFn(track.url, flags, execOptions);
+  try {
+    await ytdlpFn(track.url, flags, execOptions);
+  } catch (error) {
+    removeFilesWithStem(destDir, stem);
+    throw error;
+  }
   const filepath = path.join(destDir, `${stem}.opus`);
   if (!fs.existsSync(filepath)) {
+    removeFilesWithStem(destDir, stem);
     throw new Error(
       `yt-dlp skipped "${track.title}": it is a live stream, longer than ${MAX_TRACK_MINUTES} minutes or larger than ${MAX_DOWNLOAD_SIZE}.`
     );
@@ -678,7 +713,7 @@ const commandsData = [
 ].map((command) => command.setContexts(InteractionContextType.Guild));
 
 async function defaultDownloadTrack(guildId, track, signal) {
-  const destDir = path.join(STORAGE_BASE_DIR, "downloads", String(guildId));
+  const destDir = path.join(DEFAULT_DOWNLOADS_DIR, String(guildId));
   return download(track, destDir, undefined, signal);
 }
 
@@ -1201,6 +1236,15 @@ async function main() {
 
   installProcessErrorGuards();
 
+  try {
+    const removed = removeLeftoverDownloads();
+    if (removed) {
+      logger.info(`Removed ${removed} leftover download file(s) from an earlier run.`);
+    }
+  } catch (error) {
+    logger.error("Couldn't clear the downloads folder:", error.message);
+  }
+
   if (process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET) {
     ensureSpotifyClient().then(
       () => logger.info("Spotify: authorized."),
@@ -1262,6 +1306,7 @@ module.exports = {
   getVideoInfo,
   extractPlaylistTracks,
   download,
+  removeLeftoverDownloads,
   extractPlaylistId,
   getPlaylistTracks,
   SpotifyAccessError,

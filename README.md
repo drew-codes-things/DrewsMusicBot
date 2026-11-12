@@ -115,6 +115,10 @@ is also capped at 200 MB and 10 minutes; a track that hits a cap is
 skipped and the reason is logged. The limits are `MAX_TRACK_MINUTES`,
 `MAX_DOWNLOAD_SIZE` and `DOWNLOAD_TIMEOUT_MS` at the top of `index.js`.
 
+Downloaded audio lives in `downloads/<guild id>/`. The folder is emptied
+every time the bot starts (restored queues are downloaded again), and a
+failed or cancelled download removes its partial files.
+
 ### About the bundled ffmpeg/yt-dlp, and why there's no native Opus dependency
 
 - **ffmpeg** comes from the `ffmpeg-static` package - a prebuilt binary for
