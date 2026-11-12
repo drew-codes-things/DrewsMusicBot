@@ -70,8 +70,12 @@ system-wide.
 
 Slash commands are (re-)registered automatically with Discord every time
 the bot logs in. Spotify login doesn't block that - the bot connects to
-Discord immediately, and only a `/play` on a Spotify link before you've
-finished logging in has to wait.
+Discord immediately. A `/play` on a Spotify link before you've finished
+logging in waits up to 15 seconds and then tells the user Spotify is
+waiting for the owner's login; the login link stays open for 5 minutes
+and is printed again on the next Spotify link after that. Without
+`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, a Spotify link gets an
+immediate "isn't set up" reply and no login is started.
 
 ### Is it safe to use your own Spotify login for a bot other people use?
 

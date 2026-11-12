@@ -475,6 +475,31 @@ const SPOTIFY_REDIRECT_PORT = Number(process.env.SPOTIFY_REDIRECT_PORT) || 8888;
 const SPOTIFY_REDIRECT_URI = `http://127.0.0.1:${SPOTIFY_REDIRECT_PORT}/callback`;
 const SPOTIFY_TOKEN_PATH = path.join(STORAGE_BASE_DIR, "data", "spotify-token.json");
 const SPOTIFY_TOKEN_REFRESH_MARGIN_MS = 60_000;
+const SPOTIFY_READY_WAIT_MS = 15_000;
+const SPOTIFY_LOGIN_TIMEOUT_MS = 5 * 60_000;
+const SPOTIFY_NOT_SET_UP_MESSAGE =
+  "Spotify playlist import isn't set up on this bot (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET are not set). YouTube links and searches still work.";
+const SPOTIFY_LOGIN_PENDING_MESSAGE =
+  "Spotify is waiting for the bot owner to log in (the link is in the bot's log). Try again once that's done.";
+
+function spotifyConfigured() {
+  return Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET);
+}
+
+class SpotifyUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SpotifyUnavailableError";
+  }
+}
+
+function rejectAfter(promise, ms, makeError) {
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(makeError()), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 class SpotifyAccessError extends Error {
   constructor() {
@@ -507,13 +532,21 @@ function saveSpotifyRefreshToken(refreshToken) {
   fs.chmodSync(SPOTIFY_TOKEN_PATH, 0o600);
 }
 
-async function loginSpotifyInteractively(api) {
+async function loginSpotifyInteractively(api, timeoutMs = SPOTIFY_LOGIN_TIMEOUT_MS) {
   const state = crypto.randomUUID();
   const authorizeUrl = api.createAuthorizeURL(SPOTIFY_SCOPES, state, true);
   logger.info("Spotify: open this URL in a browser to authorize the bot (one-time setup):");
   logger.info(authorizeUrl);
 
   const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      server.close();
+      reject(new Error(`Spotify login timed out after ${Math.round(timeoutMs / 1000)}s; it starts again on the next Spotify link.`));
+    }, timeoutMs);
+    const finish = (settle, value) => {
+      clearTimeout(timer);
+      settle(value);
+    };
     const server = http.createServer((req, res) => {
       const requestUrl = new URL(req.url, SPOTIFY_REDIRECT_URI);
       if (requestUrl.pathname !== "/callback") {
@@ -529,14 +562,14 @@ async function loginSpotifyInteractively(api) {
       server.close();
 
       if (error) {
-        reject(new Error(`Spotify authorization failed: ${error}`));
+        finish(reject, new Error(`Spotify authorization failed: ${error}`));
       } else if (returnedState !== state) {
-        reject(new Error("Spotify authorization callback had a mismatched state parameter."));
+        finish(reject, new Error("Spotify authorization callback had a mismatched state parameter."));
       } else {
-        resolve(authCode);
+        finish(resolve, authCode);
       }
     });
-    server.on("error", reject);
+    server.on("error", (error) => finish(reject, error));
     server.listen(SPOTIFY_REDIRECT_PORT, "127.0.0.1");
   });
 
@@ -590,8 +623,8 @@ function ensureSpotifyClient() {
   return spotifyClientPromise;
 }
 
-async function getSpotifyClient() {
-  const api = await ensureSpotifyClient();
+async function getSpotifyClient({ waitMs = SPOTIFY_READY_WAIT_MS, ensureClient = ensureSpotifyClient } = {}) {
+  const api = await rejectAfter(ensureClient(), waitMs, () => new SpotifyUnavailableError(SPOTIFY_LOGIN_PENDING_MESSAGE));
   if (Date.now() >= spotifyTokenExpiresAt - SPOTIFY_TOKEN_REFRESH_MARGIN_MS) {
     spotifyTokenExpiresAt = await refreshSpotifyAccessToken(api);
   }
@@ -927,13 +960,21 @@ class MusicController {
     await this.queueMany(interaction, tracks.slice(0, MAX_PLAYLIST_TRACKS), 0, truncated);
   }
 
+  loadSpotifyTracks(url) {
+    return getPlaylistTracks(url);
+  }
+
   async handleSpotifyPlaylist(interaction, url) {
+    if (!spotifyConfigured()) {
+      await interaction.reply({ content: SPOTIFY_NOT_SET_UP_MESSAGE, flags: MessageFlags.Ephemeral });
+      return;
+    }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let pairs;
     try {
-      pairs = await getPlaylistTracks(url);
+      pairs = await this.loadSpotifyTracks(url);
     } catch (error) {
-      if (error instanceof SpotifyAccessError) {
+      if (error instanceof SpotifyAccessError || error instanceof SpotifyUnavailableError) {
         await interaction.editReply({ content: error.message });
         return;
       }
@@ -1245,7 +1286,7 @@ async function main() {
     logger.error("Couldn't clear the downloads folder:", error.message);
   }
 
-  if (process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET) {
+  if (spotifyConfigured()) {
     ensureSpotifyClient().then(
       () => logger.info("Spotify: authorized."),
       (error) => logger.error("Spotify: authorization failed -", error.message)
@@ -1309,7 +1350,10 @@ module.exports = {
   removeLeftoverDownloads,
   extractPlaylistId,
   getPlaylistTracks,
+  getSpotifyClient,
+  loginSpotifyInteractively,
   SpotifyAccessError,
+  SpotifyUnavailableError,
   MAX_PLAYLIST_TRACKS,
   MAX_TRACK_SECONDS,
   MusicController,
