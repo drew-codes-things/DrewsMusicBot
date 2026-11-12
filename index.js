@@ -91,19 +91,27 @@ const YOUTUBE_VIDEO = "youtube_video";
 const SEARCH = "search";
 
 const SPOTIFY_PLAYLIST_RE = /open\.spotify\.com\/playlist\//;
-const YOUTUBE_HOST_RE = /(youtube\.com|youtu\.be)/;
-const PLAYLIST_PARAM_RE = /[?&]list=/;
+const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"]);
+const URL_SCHEME_RE = /^https?:\/\//i;
+
+function parseYoutubeUrl(text) {
+  let url;
+  try {
+    url = new URL(URL_SCHEME_RE.test(text) ? text : `https://${text}`);
+  } catch {
+    return null;
+  }
+  return YOUTUBE_HOSTS.has(url.hostname.toLowerCase()) ? url : null;
+}
 
 function classify(query) {
   const stripped = query.trim();
   if (SPOTIFY_PLAYLIST_RE.test(stripped)) {
     return SPOTIFY_PLAYLIST;
   }
-  if (YOUTUBE_HOST_RE.test(stripped)) {
-    if (PLAYLIST_PARAM_RE.test(stripped)) {
-      return YOUTUBE_PLAYLIST;
-    }
-    return YOUTUBE_VIDEO;
+  const youtubeUrl = parseYoutubeUrl(stripped);
+  if (youtubeUrl) {
+    return youtubeUrl.searchParams.has("list") ? YOUTUBE_PLAYLIST : YOUTUBE_VIDEO;
   }
   return SEARCH;
 }

@@ -42,6 +42,14 @@ test("queries are classified by link type", () => {
   assert.equal(classify("  never gonna give you up "), SEARCH);
 });
 
+test("only real YouTube hosts are treated as links", () => {
+  assert.equal(classify("youtube.com/watch?v=x"), YOUTUBE_VIDEO);
+  assert.equal(classify("https://music.youtube.com/playlist?list=PL1"), YOUTUBE_PLAYLIST);
+  assert.equal(classify("http://192.168.1.1/admin?next=youtube.com"), SEARCH);
+  assert.equal(classify("https://youtube.com.example.net/watch?v=x"), SEARCH);
+  assert.equal(classify("best of youtube.com rewind"), SEARCH);
+});
+
 test("downloads per server never exceed the concurrency limit", async () => {
   let running = 0;
   let peak = 0;
