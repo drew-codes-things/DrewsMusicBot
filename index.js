@@ -9,6 +9,11 @@ const http = require("http");
 const { execFile } = require("child_process");
 
 const MAX_PLAYLIST_TRACKS = 250;
+const MAX_TRACK_MINUTES = 60;
+const MAX_TRACK_SECONDS = MAX_TRACK_MINUTES * 60;
+const MAX_DOWNLOAD_SIZE = "200M";
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const DOWNLOAD_MATCH_FILTER = `!is_live & duration <=? ${MAX_TRACK_SECONDS}`;
 const SPOTIFY_MATCH_CONCURRENCY = 4;
 
 const {
@@ -305,7 +310,11 @@ class DownloadManager {
     item.downloadTask = this._runDownload(guildId, item, controller.signal).finally(() => {
       state.settled = true;
     });
-    item.downloadTask.catch(() => {});
+    item.downloadTask.catch((error) => {
+      if (!(error instanceof CancelledError)) {
+        logger.warn(`Download failed for "${item.track.title}": ${error.message}`);
+      }
+    });
   }
 
   async _runDownload(guildId, item, signal) {
@@ -394,6 +403,10 @@ async function extractPlaylistTracks(url, ytdlpFn = defaultYtdlp) {
   return entries.map(trackFromEntry);
 }
 
+function isTooLong(track) {
+  return typeof track.durationSeconds === "number" && track.durationSeconds > MAX_TRACK_SECONDS;
+}
+
 async function download(track, destDir, ytdlpFn = defaultYtdlp, signal = undefined) {
   fs.mkdirSync(destDir, { recursive: true });
   const stem = crypto.randomUUID().replace(/-/g, "");
@@ -406,10 +419,18 @@ async function download(track, destDir, ytdlpFn = defaultYtdlp, signal = undefin
     audioFormat: "opus",
     audioQuality: "128K",
     ffmpegLocation: ffmpegPath,
+    matchFilter: DOWNLOAD_MATCH_FILTER,
+    maxFilesize: MAX_DOWNLOAD_SIZE,
   };
-  const execaOptions = signal ? { signal } : undefined;
-  await ytdlpFn(track.url, flags, execaOptions);
-  return path.join(destDir, `${stem}.opus`);
+  const execOptions = signal ? { signal, timeout: DOWNLOAD_TIMEOUT_MS } : { timeout: DOWNLOAD_TIMEOUT_MS };
+  await ytdlpFn(track.url, flags, execOptions);
+  const filepath = path.join(destDir, `${stem}.opus`);
+  if (!fs.existsSync(filepath)) {
+    throw new Error(
+      `yt-dlp skipped "${track.title}": it is a live stream, longer than ${MAX_TRACK_MINUTES} minutes or larger than ${MAX_DOWNLOAD_SIZE}.`
+    );
+  }
+  return filepath;
 }
 
 const SPOTIFY_PLAYLIST_ID_RE = /playlist\/([a-zA-Z0-9]+)/;
@@ -899,10 +920,12 @@ class MusicController {
     await this.queueMany(interaction, tracks, skipped, truncated);
   }
 
-  async queueMany(interaction, tracks, skipped, truncated = false) {
+  async queueMany(interaction, candidates, skipped, truncated = false) {
     const guildId = interaction.guildId;
     const player = this.playerFor(guildId);
     const wasIdle = player.current === null && !player.startingPlayback;
+    const tracks = candidates.filter((track) => !isTooLong(track));
+    const tooLong = candidates.length - tracks.length;
     for (const track of tracks) {
       const item = player.enqueue(track);
       this.downloadManager.startDownload(guildId, item);
@@ -911,6 +934,9 @@ class MusicController {
     let summary = `Queued ${tracks.length} tracks from playlist.`;
     if (skipped) {
       summary += ` (${skipped} couldn't be matched.)`;
+    }
+    if (tooLong) {
+      summary += ` (${tooLong} longer than ${MAX_TRACK_MINUTES} minutes left out.)`;
     }
     if (truncated) {
       summary += ` (Capped at ${MAX_PLAYLIST_TRACKS} tracks - the playlist has more.)`;
@@ -925,13 +951,7 @@ class MusicController {
     }
   }
 
-  async queueTrack(interaction, track) {
-    const guildId = interaction.guildId;
-    const player = this.playerFor(guildId);
-    const item = player.enqueue(track);
-    this.downloadManager.startDownload(guildId, item);
-
-    const message = `Queued **${track.title}**.`;
+  async respondToQueueRequest(interaction, message) {
     if (typeof interaction.isMessageComponent === "function" && interaction.isMessageComponent() && !interaction.replied && !interaction.deferred) {
       await interaction.update({ content: message, components: [] });
     } else if (interaction.replied || interaction.deferred) {
@@ -939,6 +959,22 @@ class MusicController {
     } else {
       await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
     }
+  }
+
+  async queueTrack(interaction, track) {
+    if (isTooLong(track)) {
+      await this.respondToQueueRequest(
+        interaction,
+        `**${track.title}** is longer than ${MAX_TRACK_MINUTES} minutes, which is the most this bot will play.`
+      );
+      return;
+    }
+    const guildId = interaction.guildId;
+    const player = this.playerFor(guildId);
+    const item = player.enqueue(track);
+    this.downloadManager.startDownload(guildId, item);
+
+    await this.respondToQueueRequest(interaction, `Queued **${track.title}**.`);
 
     const wasIdle = player.current === null && !player.startingPlayback;
     if (wasIdle) {
@@ -1230,6 +1266,7 @@ module.exports = {
   getPlaylistTracks,
   SpotifyAccessError,
   MAX_PLAYLIST_TRACKS,
+  MAX_TRACK_SECONDS,
   MusicController,
   commandsData,
   formatDuration,

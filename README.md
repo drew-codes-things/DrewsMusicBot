@@ -106,6 +106,15 @@ one logged-in account, regardless of who runs `/play`.
 tracks**. Larger playlists are truncated, not rejected - the first 250 get
 queued and the confirmation message says so.
 
+### Track limits
+
+Each track can be at most **60 minutes** long. A longer single track is
+refused with a message, and longer playlist tracks are left out (the
+summary says how many). Live streams are never downloaded. Every download
+is also capped at 200 MB and 10 minutes; a track that hits a cap is
+skipped and the reason is logged. The limits are `MAX_TRACK_MINUTES`,
+`MAX_DOWNLOAD_SIZE` and `DOWNLOAD_TIMEOUT_MS` at the top of `index.js`.
+
 ### About the bundled ffmpeg/yt-dlp, and why there's no native Opus dependency
 
 - **ffmpeg** comes from the `ffmpeg-static` package - a prebuilt binary for
