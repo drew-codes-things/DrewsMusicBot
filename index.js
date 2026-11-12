@@ -94,6 +94,10 @@ const SPOTIFY_PLAYLIST = "spotify_playlist";
 const YOUTUBE_PLAYLIST = "youtube_playlist";
 const YOUTUBE_VIDEO = "youtube_video";
 const SEARCH = "search";
+const UNSUPPORTED_YOUTUBE_LINK = "unsupported_youtube_link";
+const YOUTUBE_SHORT_HOSTS = new Set(["youtu.be", "www.youtu.be"]);
+const YOUTUBE_VIDEO_PATH_RE = /^\/(?:shorts|live)\/[\w-]+\/?$/;
+const YOUTUBE_SHORT_PATH_RE = /^\/[\w-]+\/?$/;
 
 const SPOTIFY_PLAYLIST_RE = /open\.spotify\.com\/playlist\//;
 const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"]);
@@ -109,16 +113,29 @@ function parseYoutubeUrl(text) {
   return YOUTUBE_HOSTS.has(url.hostname.toLowerCase()) ? url : null;
 }
 
+function isSingleVideoUrl(url) {
+  if (YOUTUBE_SHORT_HOSTS.has(url.hostname.toLowerCase())) {
+    return YOUTUBE_SHORT_PATH_RE.test(url.pathname);
+  }
+  if (url.pathname === "/watch") {
+    return Boolean(url.searchParams.get("v"));
+  }
+  return YOUTUBE_VIDEO_PATH_RE.test(url.pathname);
+}
+
 function classify(query) {
   const stripped = query.trim();
   if (SPOTIFY_PLAYLIST_RE.test(stripped)) {
     return SPOTIFY_PLAYLIST;
   }
   const youtubeUrl = parseYoutubeUrl(stripped);
-  if (youtubeUrl) {
-    return youtubeUrl.searchParams.has("list") ? YOUTUBE_PLAYLIST : YOUTUBE_VIDEO;
+  if (!youtubeUrl) {
+    return SEARCH;
   }
-  return SEARCH;
+  if (youtubeUrl.searchParams.get("list")) {
+    return YOUTUBE_PLAYLIST;
+  }
+  return isSingleVideoUrl(youtubeUrl) ? YOUTUBE_VIDEO : UNSUPPORTED_YOUTUBE_LINK;
 }
 
 const STORAGE_BASE_DIR = __dirname;
@@ -385,7 +402,7 @@ async function search(query, limit = 5, ytdlpFn = defaultYtdlp) {
 }
 
 async function getVideoInfo(url, ytdlpFn = defaultYtdlp) {
-  const flags = { dumpSingleJson: true, noWarnings: true, quiet: true, skipDownload: true };
+  const flags = { dumpSingleJson: true, noWarnings: true, quiet: true, skipDownload: true, noPlaylist: true };
   const info = await ytdlpFn(url, flags);
   return trackFromEntry(info);
 }
@@ -895,6 +912,13 @@ class MusicController {
     if (kind === YOUTUBE_PLAYLIST) {
       return this.handleYoutubePlaylist(interaction, query);
     }
+    if (kind === UNSUPPORTED_YOUTUBE_LINK) {
+      await interaction.reply({
+        content: "That YouTube link isn't a video or playlist link. Paste a video or playlist link, or search by name.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     return this.handleSpotifyPlaylist(interaction, query);
   }
 
@@ -1329,6 +1353,7 @@ module.exports = {
   YOUTUBE_PLAYLIST,
   YOUTUBE_VIDEO,
   SEARCH,
+  UNSUPPORTED_YOUTUBE_LINK,
   classify,
   DEFAULT_PATH: DEFAULT_ASSIGNMENTS_PATH,
   loadAssignments,
