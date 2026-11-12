@@ -1009,6 +1009,9 @@ class MusicController {
       } catch {
       }
     }
+    if (player.current !== item) {
+      return;
+    }
     if (!item.filepath) {
       await this.onPlaybackFinished(guild, player);
       return;
@@ -1037,10 +1040,19 @@ class MusicController {
     }
 
     if (finished) {
-      DownloadManager.deleteFile(finished);
+      this.downloadManager.cancel(finished);
     }
 
     await this.playItem(guild, player, nextItem);
+  }
+
+  async endCurrentTrack(guild, player) {
+    const status = player.audioPlayer?.state.status;
+    if (status && status !== AudioPlayerStatus.Idle) {
+      player.audioPlayer.stop(true);
+      return;
+    }
+    await this.onPlaybackFinished(guild, player);
   }
 
   async pause(interaction) {
@@ -1071,7 +1083,7 @@ class MusicController {
     }
     await interaction.reply({ content: `Skipped **${player.current.track.title}**.`, flags: MessageFlags.Ephemeral });
     player.pendingTransition = "advance";
-    player.audioPlayer.stop();
+    await this.endCurrentTrack(interaction.guild, player);
   }
 
   async back(interaction) {
@@ -1082,12 +1094,7 @@ class MusicController {
     }
     await interaction.reply({ content: "Going back...", flags: MessageFlags.Ephemeral });
     player.pendingTransition = "back";
-    const status = player.audioPlayer?.state.status;
-    if (status === AudioPlayerStatus.Playing || status === AudioPlayerStatus.Paused) {
-      player.audioPlayer.stop();
-    } else {
-      await this.onPlaybackFinished(interaction.guild, player);
-    }
+    await this.endCurrentTrack(interaction.guild, player);
   }
 
   async showQueue(interaction) {
