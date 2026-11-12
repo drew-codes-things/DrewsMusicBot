@@ -1276,7 +1276,10 @@ class MusicController {
 }
 
 function buildDiscordClient() {
-  return new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+  return new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function registerCommands(clientId, token) {
